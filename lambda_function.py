@@ -75,9 +75,9 @@ def lambda_handler(event, context):
         minSize=(30, 30),  # ignore anything smaller than 30x30 pixels
     )
 
-    # 5. Draw a white box around every face found
+    # 5. Draw a green box around every face found
     for (x, y, w, h) in faces:
-        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 255, 255), 2)
+        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 3)
 
     # 6. Encode back to JPEG
     ok, output_image = cv2.imencode(".jpg", image)
@@ -103,7 +103,7 @@ def lambda_handler(event, context):
     return html_response(
         200,
         "<html><body>"
-        f"<p>Found {len(faces)} face(s)</p>"
+        f"<p>Found {len(faces)} face(s) - deployed automatically with GitHub Actions</p>"
         f"<img src='{output_url}' style='max-width:100%'/>"
         "</body></html>",
     )
