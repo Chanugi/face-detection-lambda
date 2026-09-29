@@ -1,0 +1,92 @@
+name: Deploy face_detection Lambda
+
+# When should this pipeline run?
+on:
+  push:
+    branches: [main]      # every push to the main branch
+  workflow_dispatch:       # also allows a manual "Run workflow" button on GitHub
+
+# Needed so GitHub can get short-lived AWS access through OIDC (no stored keys)
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two deployments at the same time
+concurrency:
+  group: deploy-face-detection
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  FUNCTION_NAME: face_detection
+  S3_BUCKET: zatersio-face-detection-2026
+  # Each build gets its own zip, named after the commit, so you can trace every deployment
+  S3_KEY: code/face_detection_${{ github.sha }}.zip
+  TEST_IMAGE: https://raw.githubusercontent.com/informramiz/Face-Detection-OpenCV/master/data/test3.jpg
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Download the repository code onto GitHub's Linux machine
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      # 2. Install the same Python version Lambda uses
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # 3. CI check: stop early if the code has a syntax error
+      - name: Check code compiles
+        run: python -m py_compile lambda_function.py
+
+      # 4. Download OpenCV + numpy built for Lambda (Linux, x86_64, Python 3.12)
+      - name: Install dependencies into package/
+        run: |
+          pip install --target package \
+            --platform manylinux2014_x86_64 --only-binary=:all: \
+            --python-version 3.12 --implementation cp \
+            -r requirements.txt
+
+      # 5. Build the deployment zip (libraries + code at the top level)
+      - name: Build deployment zip
+        run: |
+          cp lambda_function.py package/
+          cd package
+          zip -r9q ../face_detection_code.zip .
+          cd ..
+          ls -lh face_detection_code.zip
+
+      # 6. Log in to AWS using the role you created (OIDC)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 7. Upload the zip to S3 (it is too large to send to Lambda directly)
+      - name: Upload zip to S3
+        run: aws s3 cp face_detection_code.zip "s3://$S3_BUCKET/$S3_KEY"
+
+      # 8. Point the Lambda function at the new zip and wait until it is live
+      - name: Update Lambda function code
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --s3-bucket "$S3_BUCKET" \
+            --s3-key "$S3_KEY"
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+      # 9. Smoke test: run the deployed function once and fail the pipeline if it breaks
+      - name: Smoke test deployed function
+        run: |
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload "{\"imageUrl\": \"$TEST_IMAGE\"}" \
+            response.json
+          cat response.json
+          jq -e '.statusCode == 200' response.json
